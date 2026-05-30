@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PptSemanticEditor.Api</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PptSemanticEditor.Core\PptSemanticEditor.Core.csproj" />
+    <ProjectReference Include="..\PptSemanticEditor.Parser\PptSemanticEditor.Parser.csproj" />
+    <ProjectReference Include="..\PptSemanticEditor.Semantic\PptSemanticEditor.Semantic.csproj" />
+    <ProjectReference Include="..\PptSemanticEditor.Agent\PptSemanticEditor.Agent.csproj" />
+    <ProjectReference Include="..\PptSemanticEditor.Renderer\PptSemanticEditor.Renderer.csproj" />
+  </ItemGroup>
+</Project>

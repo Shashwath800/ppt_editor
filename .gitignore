@@ -1,0 +1,28 @@
+# Node
+node_modules/
+dist/
+build/
+.env
+
+# .NET / C#
+bin/
+obj/
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+TestResults/
+
+# IDE / OS
+.vscode/
+.idea/
+*.suo
+*.userprefs
+.DS_Store
+Thumbs.db
+
+# User Uploads / Output
+uploads/
+*.pptx
+!backend/tests/**/*.pptx
+!frontend/public/**/*.pptx

@@ -1,0 +1,73 @@
+using Microsoft.AspNetCore.Mvc;
+using PptSemanticEditor.Api.Services;
+using PptSemanticEditor.Core.Interfaces;
+using PptSemanticEditor.Core.Models;
+
+namespace PptSemanticEditor.Api.Controllers;
+
+[ApiController]
+[Route("api/validation")]
+public class ValidationController : ControllerBase
+{
+    private readonly SessionStore _sessionStore;
+    private readonly IValidationEngine _validationEngine;
+
+    public ValidationController(SessionStore sessionStore, IValidationEngine validationEngine)
+    {
+        _sessionStore = sessionStore;
+        _validationEngine = validationEngine;
+    }
+
+    [HttpPost("{sessionId}/validate")]
+    public IActionResult Validate(string sessionId)
+    {
+        var session = _sessionStore.GetSession(sessionId);
+        if (session == null)
+            return NotFound("Session not found.");
+
+        var targetPresentation = session.ModifiedPresentation ?? session.SemanticPresentation;
+        if (targetPresentation == null)
+            return BadRequest("No semantic presentation available to validate.");
+
+        try
+        {
+            var result = _validationEngine.Validate(targetPresentation);
+            session.LastValidation = result;
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Validation failed: {ex.Message}");
+        }
+    }
+
+    [HttpGet("{sessionId}/history")]
+    public IActionResult GetHistory(string sessionId)
+    {
+        var session = _sessionStore.GetSession(sessionId);
+        if (session == null)
+            return NotFound("Session not found.");
+
+        return Ok(session.VersionHistory);
+    }
+
+    [HttpPost("{sessionId}/rollback/{version}")]
+    public IActionResult Rollback(string sessionId, int version)
+    {
+        var session = _sessionStore.GetSession(sessionId);
+        if (session == null)
+            return NotFound("Session not found.");
+
+        var snapshot = session.VersionHistory.GetVersion(version);
+        if (snapshot == null)
+            return NotFound($"Version {version} not found in history.");
+
+        // Restore the snapshot
+        session.ModifiedPresentation = snapshot.Snapshot;
+        
+        // Add a new version entry for the rollback
+        session.VersionHistory.AddVersion(snapshot.Snapshot, $"Rollback to version {version}");
+
+        return Ok(session.ModifiedPresentation);
+    }
+}
