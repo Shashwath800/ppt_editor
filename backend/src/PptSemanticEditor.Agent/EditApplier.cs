@@ -74,7 +74,7 @@ public class EditApplier : IEditApplier
             var newText = newTextObj?.ToString();
             if (!string.IsNullOrEmpty(newText))
             {
-                element.Text = newText;
+                element.Text = newText.Replace("\\n", "\n");
                 return;
             }
         }
@@ -84,7 +84,7 @@ public class EditApplier : IEditApplier
             element.Text,
             action.Description
         );
-        element.Text = rewritten;
+        element.Text = rewritten.Replace("\\n", "\n");
     }
 
     private void ApplyFontSize(SemanticPresentation presentation, EditAction action)

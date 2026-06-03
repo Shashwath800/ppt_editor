@@ -64,6 +64,11 @@ public class OpenXmlShapeInfo
     public bool IsConnector { get; set; }
     public string? ConnectorStartId { get; set; }
     public string? ConnectorEndId { get; set; }
+
+    /// <summary>
+    /// Per-paragraph, per-run formatting data extracted from the shape's text body.
+    /// </summary>
+    public List<TextParagraph>? Paragraphs { get; set; }
 }
 
 public class OpenXmlRelationshipInfo

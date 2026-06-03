@@ -62,11 +62,26 @@ public class ValidationController : ControllerBase
         if (snapshot == null)
             return NotFound($"Version {version} not found in history.");
 
-        // Restore the snapshot
-        session.ModifiedPresentation = snapshot.Snapshot;
-        
+        // Deep-clone the snapshot so mutations don't leak into version history
+        var clonedPresentation = session.VersionHistory.GetSnapshotClone(version);
+        if (clonedPresentation == null)
+            return StatusCode(500, "Failed to clone version snapshot.");
+
+        // Restore the snapshot as both modified and base presentation
+        // so subsequent edits use the rolled-back state as their starting point
+        session.ModifiedPresentation = clonedPresentation;
+        session.SemanticPresentation = session.VersionHistory.GetSnapshotClone(version)!;
+
+        // Reset downstream pipeline stages since the presentation has changed
+        session.PipelineState.SetStage("editPlan", "pending");
+        session.PipelineState.SetStage("jsonTransformation", "pending");
+        session.PipelineState.SetStage("rendering", "pending");
+        session.PipelineState.SetStage("complete", "pending");
+        session.RenderedFilePath = null;
+        session.ActionCommands = null;
+
         // Add a new version entry for the rollback
-        session.VersionHistory.AddVersion(snapshot.Snapshot, $"Rollback to version {version}");
+        session.VersionHistory.AddVersion(clonedPresentation, $"Rollback to version {version}");
 
         return Ok(session.ModifiedPresentation);
     }

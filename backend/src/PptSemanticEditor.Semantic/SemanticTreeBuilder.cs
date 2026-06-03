@@ -120,7 +120,8 @@ public class SemanticTreeBuilder : ISemanticTreeBuilder
             FontColor = !string.IsNullOrEmpty(shape.FontColor) ? shape.FontColor : "#000000",
             FillColor = !string.IsNullOrEmpty(shape.FillColor) ? shape.FillColor : "transparent",
             ImageBase64 = shape.ImageBase64,
-            Properties = BuildProperties(shape)
+            Properties = BuildProperties(shape),
+            Paragraphs = shape.Paragraphs
         };
     }
 

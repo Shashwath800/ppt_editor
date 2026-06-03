@@ -99,25 +99,23 @@ public class AgentController : ControllerBase
 
         try
         {
-            var minifiedPresentation = new
+            // Use current state (modified if available) so the AI sees post-rollback data
+            var currentPresentation = session.ModifiedPresentation ?? session.SemanticPresentation;
+            
+            // Send only text content to the LLM — no structural metadata
+            // Format: Slide N | element_ID | (charCount chars) | "text content"
+            var textLines = new List<string>();
+            foreach (var slide in currentPresentation!.Slides)
             {
-                session.SemanticPresentation.SlideCount,
-                Slides = session.SemanticPresentation.Slides.Select(s => new
+                foreach (var el in slide.Elements.Where(e => !string.IsNullOrWhiteSpace(e.Text)))
                 {
-                    s.Id,
-                    s.Title,
-                    Elements = s.Elements
-                        .Where(e => !string.IsNullOrWhiteSpace(e.Text))
-                        .Select(e => new
-                        {
-                            e.Id,
-                            e.Type,
-                            e.Text
-                        })
-                })
-            };
-            var semanticJson = JsonSerializer.Serialize(minifiedPresentation, JsonGenerator.GetOptions());
-            var editActions = await _editPlanAgent.GenerateEditPlanAsync(semanticJson, userPrompt);
+                    // Escape newlines so the LLM explicitly sees them and can preserve them
+                    var escapedText = el.Text.Replace("\n", "\\n");
+                    textLines.Add($"Slide {slide.Id} | {el.Id} | ({el.Text.Length} chars) | \"{escapedText}\"");
+                }
+            }
+            var textContent = string.Join("\n", textLines);
+            var editActions = await _editPlanAgent.GenerateEditPlanAsync(textContent, userPrompt);
 
             // Convert EditActions to ActionCommands for backward compatibility with the AI prompt if it still generates EditActions
             var commands = editActions.Select(a => new ActionCommand
@@ -159,7 +157,9 @@ public class AgentController : ControllerBase
 
         try
         {
-            var (modified, auditLog) = await _actionExecutor.ExecuteAsync(session.SemanticPresentation, commands);
+            // Use current state as the base — after rollback this is the rolled-back version
+            var currentPresentation = session.ModifiedPresentation ?? session.SemanticPresentation;
+            var (modified, auditLog) = await _actionExecutor.ExecuteAsync(currentPresentation!, commands);
 
             session.ModifiedPresentation = modified;
             session.ActionCommands = auditLog;

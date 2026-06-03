@@ -252,11 +252,12 @@ public class ActionExecutor : IActionExecutor
         var newText = cmd.Value ?? GetStringParam(cmd, "newText", "");
         if (!string.IsNullOrEmpty(newText))
         {
-            element.Text = newText;
+            element.Text = newText.Replace("\\n", "\n");
         }
         else
         {
-            element.Text = await _llmService.ApplyTextRewriteAsync(element.Text, cmd.Description);
+            var rewritten = await _llmService.ApplyTextRewriteAsync(element.Text, cmd.Description);
+            element.Text = rewritten.Replace("\\n", "\n");
         }
     }
 

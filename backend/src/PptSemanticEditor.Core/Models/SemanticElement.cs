@@ -48,4 +48,13 @@ public class SemanticElement
 
     [JsonPropertyName("properties")]
     public Dictionary<string, string> Properties { get; set; } = new();
+
+    /// <summary>
+    /// Rich paragraph formatting data extracted from the original PPTX.
+    /// Used as a template when rendering edited text back to PPTX,
+    /// so that per-paragraph colors, numbering, and bullets are preserved.
+    /// The flat Text property remains the primary data the AI works with.
+    /// </summary>
+    [JsonPropertyName("paragraphs")]
+    public List<TextParagraph>? Paragraphs { get; set; }
 }

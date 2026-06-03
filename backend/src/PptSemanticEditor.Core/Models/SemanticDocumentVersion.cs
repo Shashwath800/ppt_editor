@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace PptSemanticEditor.Core.Models;
@@ -41,12 +42,14 @@ public class VersionHistory
 
     public void AddVersion(SemanticPresentation snapshot, string description, List<ActionCommand>? actions = null)
     {
+        // Deep-clone the snapshot to prevent mutation leaking into version history
+        var clonedSnapshot = DeepClone(snapshot);
         var version = new SemanticDocumentVersion
         {
             Version = CurrentVersion + 1,
             Timestamp = DateTime.UtcNow.ToString("o"),
             Description = description,
-            Snapshot = snapshot,
+            Snapshot = clonedSnapshot,
             AppliedActions = actions
         };
         Versions.Add(version);
@@ -57,4 +60,20 @@ public class VersionHistory
 
     public SemanticDocumentVersion? GetLatest()
         => Versions.OrderByDescending(v => v.Version).FirstOrDefault();
+
+    /// <summary>
+    /// Returns a deep-cloned copy of the snapshot for the given version,
+    /// so the caller can mutate it without corrupting version history.
+    /// </summary>
+    public SemanticPresentation? GetSnapshotClone(int version)
+    {
+        var v = Versions.FirstOrDefault(v => v.Version == version);
+        return v != null ? DeepClone(v.Snapshot) : null;
+    }
+
+    private static SemanticPresentation DeepClone(SemanticPresentation source)
+    {
+        var json = JsonSerializer.Serialize(source);
+        return JsonSerializer.Deserialize<SemanticPresentation>(json)!;
+    }
 }

@@ -2,45 +2,47 @@ namespace PptSemanticEditor.Agent;
 
 public static class EditPlanPrompt
 {
-    public const string SystemPrompt = @"You are an expert presentation copywriter. Given a presentation's text content and a user's instruction, you generate specific text-editing actions.
+    public const string SystemPrompt = @"You are an expert presentation text rewriter. You receive ONLY the text content from a presentation and a user instruction. Your job is to rewrite the specified text blocks.
 
 CRITICAL RULES:
-1. When rewriting text, your new text MUST be approximately the same length (character count) as the original text. Presentations have strict layout boundaries; too much text will overflow shapes, and too little will leave awkward empty space.
-2. If the user asks to rewrite the entire presentation (e.g., change the topic), generate a `rewrite_text` action for EVERY relevant text element provided in the JSON context. Maintain the original structure (headings stay short headings, paragraphs stay paragraphs).
+1. Your rewritten text MUST be approximately the same character length as the original. Presentations have strict layout boundaries — too much text overflows shapes, too little leaves empty space.
+2. Preserve the exact paragraph and line break structure. In the input text, newlines are represented as literal '\n' characters. Your rewritten text MUST use exactly the same number of '\n' characters. Do NOT merge multiple bullet points into a single paragraph.
+3. Only rewrite the text blocks that need changing based on the user's instruction. Do NOT rewrite text that is unrelated to the instruction.
 
-Available edit actions:
-- ""rewrite_text"": Rewrite, expand, or fix text content. Parameters: { ""newText"": ""..."" }
-- ""add_slide"": Add a new slide with generated content. Parameters: { ""title"": ""..."", ""classification"": ""..."", ""text"": ""..."" }
+Available actions:
+- ""rewrite_text"": Rewrite text content. Parameters: { ""newText"": ""..."" }
+- ""add_slide"": Add a new slide. Parameters: { ""title"": ""..."", ""classification"": ""content"", ""text"": ""..."" }
 
-Return your response as a JSON array of edit actions with exactly this structure:
-[
-  {
-    ""action"": ""rewrite_text"",
-    ""slide"": 1,
-    ""target"": ""element_123"",
-    ""description"": ""Rewrite paragraph to sound more professional"",
-    ""reason"": ""The original text was too informal."",
-    ""confidence"": 0.95,
-    ""parameters"": { ""newText"": ""This is the newly generated professional text."" },
-    ""approved"": false
-  }
-]
+Return your response as a JSON object with this exact structure:
+{
+  ""actions"": [
+    {
+      ""action"": ""rewrite_text"",
+      ""slide"": 1,
+      ""target"": ""element_123"",
+      ""description"": ""Brief description of what was changed"",
+      ""reason"": ""Why this change was needed"",
+      ""confidence"": 0.95,
+      ""parameters"": { ""newText"": ""The rewritten text, same length as original."" },
+      ""approved"": false
+    }
+  ]
+}
 
 Be specific about which slide (1-based index) and which element (by ID) each action targets.
-Do NOT include any text outside the JSON array.";
+IMPORTANT: Match the character count and the EXACT number of lines/paragraphs of the original text as closely as possible in your rewritten text.";
 
     public static string BuildUserPrompt(string semanticJson, string userInstruction)
     {
-        return $@"Based on the following presentation text content and the user's instruction, generate specific edit actions to fulfill the text edits. Pay strict attention to the length of the original text blocks when generating your replacements.
+        return $@"Here is the text content from the presentation. Each entry shows the slide number, element ID, and the current text with its character count.
 
-## Presentation Text Content:
-```json
+## Text Content:
 {semanticJson}
-```
 
-## User Edit Instruction:
+## User Instruction:
 {userInstruction}
 
-Generate a focused list of text edit actions that implement the user's instruction. Ensure each action includes a clear `reason` and `confidence` score (0.0 to 1.0). Return ONLY a valid JSON array.";
+Rewrite ONLY the text blocks that need changing. Keep the same character length. Return the result as a JSON object with an ""actions"" array.";
     }
 }
+

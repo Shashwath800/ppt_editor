@@ -72,11 +72,44 @@ public class GroqLlmService : ILlmService
         try
         {
             var cleaned = ExtractJson(responseText);
-            var actions = JsonSerializer.Deserialize<List<EditAction>>(cleaned, JsonOptions);
+            
+            // The LLM may return either a bare array [...] or an object { "actions": [...] }
+            // because response_format: json_object forces a top-level object
+            List<EditAction>? actions = null;
+            
+            var trimmed = cleaned.TrimStart();
+            if (trimmed.StartsWith("["))
+            {
+                actions = JsonSerializer.Deserialize<List<EditAction>>(cleaned, JsonOptions);
+            }
+            else if (trimmed.StartsWith("{"))
+            {
+                using var doc = JsonDocument.Parse(cleaned);
+                // Look for an "actions" key containing the array
+                if (doc.RootElement.TryGetProperty("actions", out var actionsElement))
+                {
+                    actions = JsonSerializer.Deserialize<List<EditAction>>(actionsElement.GetRawText(), JsonOptions);
+                }
+                else
+                {
+                    // Try other common wrapper keys
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Array)
+                        {
+                            actions = JsonSerializer.Deserialize<List<EditAction>>(prop.Value.GetRawText(), JsonOptions);
+                            break;
+                        }
+                    }
+                }
+            }
+            
             return actions ?? new List<EditAction>();
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            Console.WriteLine($"[EditPlan] JSON parse error: {ex.Message}");
+            Console.WriteLine($"[EditPlan] Raw response: {responseText}");
             return new List<EditAction>
             {
                 new EditAction
@@ -108,7 +141,7 @@ public class GroqLlmService : ILlmService
                 new { role = "user", content = userPrompt }
             },
             temperature = 0.3,
-            max_tokens = 1024,
+            max_tokens = 4096,
             response_format = new { type = "json_object" }
         };
 

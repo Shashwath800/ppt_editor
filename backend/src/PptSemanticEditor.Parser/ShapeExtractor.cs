@@ -89,6 +89,7 @@ public class ShapeExtractor
         {
             info.Text = ExtractTextContent(textBody);
             ExtractFontInfo(textBody, info);
+            info.Paragraphs = ExtractParagraphs(textBody);
         }
 
         // Extract fill color
@@ -236,8 +237,11 @@ public class ShapeExtractor
     private string ExtractTextContent(OpenXmlCompositeElement textBody)
     {
         var sb = new StringBuilder();
-        foreach (var paragraph in textBody.Elements<DocumentFormat.OpenXml.Drawing.Paragraph>())
+        var paragraphs = textBody.Elements<DocumentFormat.OpenXml.Drawing.Paragraph>().ToList();
+        
+        for (int i = 0; i < paragraphs.Count; i++)
         {
+            var paragraph = paragraphs[i];
             foreach (var run in paragraph.Elements<DocumentFormat.OpenXml.Drawing.Run>())
             {
                 var text = run.GetFirstChild<DocumentFormat.OpenXml.Drawing.Text>();
@@ -251,9 +255,11 @@ public class ShapeExtractor
                 if (text != null)
                     sb.Append(text.Text);
             }
-            sb.AppendLine();
+            // Add newline between paragraphs (but not after the last one)
+            if (i < paragraphs.Count - 1)
+                sb.Append('\n');
         }
-        return sb.ToString().TrimEnd();
+        return sb.ToString();
     }
 
     private void ExtractFontInfo(OpenXmlCompositeElement textBody, OpenXmlShapeInfo info)
@@ -311,4 +317,111 @@ public class ShapeExtractor
             }
         }
     }
+
+    /// <summary>
+    /// Extracts per-paragraph, per-run formatting from a text body.
+    /// Each paragraph captures bullet/numbering properties and alignment.
+    /// Each run within a paragraph captures font color, size, bold, italic, and font family.
+    /// </summary>
+    private List<TextParagraph> ExtractParagraphs(OpenXmlCompositeElement textBody)
+    {
+        var result = new List<TextParagraph>();
+        var paragraphs = textBody.Elements<DocumentFormat.OpenXml.Drawing.Paragraph>().ToList();
+
+        foreach (var paragraph in paragraphs)
+        {
+            var tp = new TextParagraph();
+
+            // Extract paragraph properties (bullets, numbering, indent, alignment)
+            var pPr = paragraph.GetFirstChild<DocumentFormat.OpenXml.Drawing.ParagraphProperties>();
+            if (pPr != null)
+            {
+                // Alignment
+                if (pPr.Alignment?.Value != null)
+                {
+                    var alignVal = pPr.Alignment.Value;
+                    if (alignVal == DocumentFormat.OpenXml.Drawing.TextAlignmentTypeValues.Left)
+                        tp.Alignment = "left";
+                    else if (alignVal == DocumentFormat.OpenXml.Drawing.TextAlignmentTypeValues.Center)
+                        tp.Alignment = "center";
+                    else if (alignVal == DocumentFormat.OpenXml.Drawing.TextAlignmentTypeValues.Right)
+                        tp.Alignment = "right";
+                    else if (alignVal == DocumentFormat.OpenXml.Drawing.TextAlignmentTypeValues.Justified)
+                        tp.Alignment = "justify";
+                }
+
+                // Indent level
+                if (pPr.Level?.Value != null)
+                    tp.IndentLevel = pPr.Level.Value;
+
+                // Bullet/numbering detection
+                var buAutoNum = pPr.GetFirstChild<DocumentFormat.OpenXml.Drawing.AutoNumberedBullet>();
+                if (buAutoNum != null)
+                {
+                    tp.BulletType = "numbered";
+                    tp.NumberingFormat = buAutoNum.Type?.Value.ToString();
+                }
+                else
+                {
+                    var buChar = pPr.GetFirstChild<DocumentFormat.OpenXml.Drawing.CharacterBullet>();
+                    if (buChar != null)
+                    {
+                        tp.BulletType = "bullet";
+                    }
+                    else
+                    {
+                        // Check for picture bullets or other bullet types
+                        var buNone = pPr.GetFirstChild<DocumentFormat.OpenXml.Drawing.NoBullet>();
+                        if (buNone != null)
+                            tp.BulletType = null; // explicitly no bullet
+                    }
+                }
+            }
+
+            // Extract runs with their formatting
+            foreach (var run in paragraph.Elements<DocumentFormat.OpenXml.Drawing.Run>())
+            {
+                var tr = new TextRun();
+                var text = run.GetFirstChild<DocumentFormat.OpenXml.Drawing.Text>();
+                tr.Text = text?.Text ?? "";
+
+                var rPr = run.RunProperties;
+                if (rPr != null)
+                {
+                    // Font size (hundredths of a point → points)
+                    if (rPr.FontSize?.Value != null)
+                        tr.FontSize = rPr.FontSize.Value / 100.0;
+
+                    // Bold
+                    if (rPr.Bold?.Value != null)
+                        tr.Bold = rPr.Bold.Value;
+
+                    // Italic
+                    if (rPr.Italic?.Value != null)
+                        tr.Italic = rPr.Italic.Value;
+
+                    // Font color
+                    var solidFill = rPr.GetFirstChild<SolidFill>();
+                    if (solidFill != null)
+                    {
+                        var rgbColor = solidFill.GetFirstChild<RgbColorModelHex>();
+                        if (rgbColor?.Val?.Value != null)
+                            tr.FontColor = $"#{rgbColor.Val.Value}";
+                    }
+
+                    // Font family
+                    var latin = rPr.GetFirstChild<DocumentFormat.OpenXml.Drawing.LatinFont>();
+                    if (latin?.Typeface != null)
+                        tr.FontFamily = latin.Typeface;
+                }
+
+                tp.Runs.Add(tr);
+            }
+
+            result.Add(tp);
+        }
+
+        return result;
+    }
 }
+
