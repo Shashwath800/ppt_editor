@@ -166,11 +166,25 @@ public class ShapeExtractor
         // Determine the type based on content
         var outerXml = graphicFrame.OuterXml;
         if (outerXml.Contains("a:tbl") || outerXml.Contains("<a:tbl"))
+        {
             info.Type = "table";
+            // Basic text extraction for tables: find all <a:t> elements and join them
+            var sb = new StringBuilder();
+            foreach (var t in graphicFrame.Descendants<DocumentFormat.OpenXml.Drawing.Text>())
+            {
+                if (!string.IsNullOrWhiteSpace(t.Text))
+                    sb.AppendLine(t.Text.Trim());
+            }
+            info.Text = sb.ToString().TrimEnd();
+        }
         else if (outerXml.Contains("c:chart") || outerXml.Contains("chartSpace"))
+        {
             info.Type = "chart";
+        }
         else
+        {
             info.Type = "graphicFrame";
+        }
 
         // Extract transform from the graphic frame
         var xfrm = graphicFrame.Transform;
@@ -211,6 +225,9 @@ public class ShapeExtractor
                 case GraphicFrame gf:
                     shapes.Add(ExtractGraphicFrame(gf));
                     break;
+                case GroupShape gs:
+                    shapes.AddRange(ExtractGroupShape(gs, slidePart));
+                    break;
             }
         }
 
@@ -242,19 +259,26 @@ public class ShapeExtractor
         for (int i = 0; i < paragraphs.Count; i++)
         {
             var paragraph = paragraphs[i];
-            foreach (var run in paragraph.Elements<DocumentFormat.OpenXml.Drawing.Run>())
+            foreach (var child in paragraph.ChildElements)
             {
-                var text = run.GetFirstChild<DocumentFormat.OpenXml.Drawing.Text>();
-                if (text != null)
-                    sb.Append(text.Text);
+                if (child is DocumentFormat.OpenXml.Drawing.Run run)
+                {
+                    var text = run.GetFirstChild<DocumentFormat.OpenXml.Drawing.Text>();
+                    if (text != null)
+                        sb.Append(text.Text);
+                }
+                else if (child is DocumentFormat.OpenXml.Drawing.Field field)
+                {
+                    var text = field.GetFirstChild<DocumentFormat.OpenXml.Drawing.Text>();
+                    if (text != null)
+                        sb.Append(text.Text);
+                }
+                else if (child is DocumentFormat.OpenXml.Drawing.Break)
+                {
+                    sb.Append('\n');
+                }
             }
-            // Also check for fields (like slide numbers, dates)
-            foreach (var field in paragraph.Elements<DocumentFormat.OpenXml.Drawing.Field>())
-            {
-                var text = field.GetFirstChild<DocumentFormat.OpenXml.Drawing.Text>();
-                if (text != null)
-                    sb.Append(text.Text);
-            }
+            
             // Add newline between paragraphs (but not after the last one)
             if (i < paragraphs.Count - 1)
                 sb.Append('\n');

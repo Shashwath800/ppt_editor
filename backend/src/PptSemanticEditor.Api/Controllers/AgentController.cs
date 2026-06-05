@@ -103,18 +103,19 @@ public class AgentController : ControllerBase
             var currentPresentation = session.ModifiedPresentation ?? session.SemanticPresentation;
             
             // Send only text content to the LLM — no structural metadata
-            // Format: Slide N | element_ID | (charCount chars) | "text content"
-            var textLines = new List<string>();
-            foreach (var slide in currentPresentation!.Slides)
+            // Group elements visually under each slide
+            var slideGroups = currentPresentation!.Slides.Select(slide =>
             {
-                foreach (var el in slide.Elements.Where(e => !string.IsNullOrWhiteSpace(e.Text)))
-                {
-                    // Escape newlines so the LLM explicitly sees them and can preserve them
-                    var escapedText = el.Text.Replace("\n", "\\n");
-                    textLines.Add($"Slide {slide.Id} | {el.Id} | ({el.Text.Length} chars) | \"{escapedText}\"");
-                }
-            }
-            var textContent = string.Join("\n", textLines);
+                var lines = slide.Elements
+                    .Where(e => !string.IsNullOrWhiteSpace(e.Text))
+                    .Select(e =>
+                    {
+                        var escapedText = e.Text.Replace("\n", "\\n");
+                        return $"  [{e.Id}] ({e.Text.Length} chars): \"{escapedText}\"";
+                    });
+                return $"--- Slide {slide.Id} ---\n" + string.Join("\n", lines);
+            });
+            var textContent = string.Join("\n\n", slideGroups);
             var editActions = await _editPlanAgent.GenerateEditPlanAsync(textContent, userPrompt);
 
             // Convert EditActions to ActionCommands for backward compatibility with the AI prompt if it still generates EditActions

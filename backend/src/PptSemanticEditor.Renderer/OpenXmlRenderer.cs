@@ -1,5 +1,4 @@
 using DocumentFormat.OpenXml;
-using DocumentFormat.OpenXml.Drawing;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Presentation;
 using PptSemanticEditor.Core.Interfaces;
@@ -20,91 +19,96 @@ public class OpenXmlRenderer : IOpenXmlRenderer
 {
     public async Task<Stream> RenderAsync(SemanticPresentation presentation, string originalFilePath)
     {
-        var tempFilePath = System.IO.Path.GetTempFileName() + ".pptx";
-        System.IO.File.Copy(originalFilePath, tempFilePath, true);
+        // FIX: GetTempFileName() physically creates a 0-byte .tmp file on disk.
+        // Appending ".pptx" produced a different path, leaking the .tmp file on every call.
+        // GetRandomFileName() returns a name string only — no file is created.
+        var tempFilePath = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            System.IO.Path.GetRandomFileName() + ".pptx");
 
-        using (var presentationDocument = PresentationDocument.Open(tempFilePath, true))
+        // FIX: Declare memoryStream outside try so the catch can dispose it on failure.
+        MemoryStream? memoryStream = null;
+        try
         {
-            var presentationPart = presentationDocument.PresentationPart;
-            if (presentationPart?.Presentation?.SlideIdList == null)
-                throw new InvalidOperationException("Invalid PPTX: No presentation part or slide list.");
+            System.IO.File.Copy(originalFilePath, tempFilePath, true);
 
-            var slideIds = presentationPart.Presentation.SlideIdList.Elements<P.SlideId>().ToList();
-
-            // Iterate over the semantic slides
-            foreach (var semanticSlide in presentation.Slides)
+            using (var presentationDocument = PresentationDocument.Open(tempFilePath, true))
             {
-                // Slide IDs are 1-based index (SlideIndex + 1)
-                var slideIndex = semanticSlide.Id - 1;
-                if (slideIndex < 0 || slideIndex >= slideIds.Count)
-                    continue;
+                var presentationPart = presentationDocument.PresentationPart;
+                if (presentationPart?.Presentation?.SlideIdList == null)
+                    throw new InvalidOperationException("Invalid PPTX: No presentation part or slide list.");
 
-                var slideId = slideIds[slideIndex];
-                var relationshipId = slideId.RelationshipId?.Value;
-                if (string.IsNullOrEmpty(relationshipId))
-                    continue;
+                var slideIds = presentationPart.Presentation.SlideIdList.Elements<P.SlideId>().ToList();
 
-                var slidePart = (SlidePart)presentationPart.GetPartById(relationshipId);
-                var slide = slidePart.Slide;
-                if (slide?.CommonSlideData?.ShapeTree == null)
-                    continue;
-
-                bool slideModified = false;
-
-                foreach (var element in semanticSlide.Elements)
+                foreach (var semanticSlide in presentation.Slides)
                 {
-                    if (string.IsNullOrWhiteSpace(element.Text))
+                    var slideIndex = semanticSlide.Id - 1;
+                    if (slideIndex < 0 || slideIndex >= slideIds.Count)
                         continue;
 
-                    // Extract the raw OpenXML shape ID
-                    var openXmlShapeId = element.Id.StartsWith("element_")
-                        ? element.Id.Substring(8)
-                        : element.Id;
-
-                    // Find the shape in the XML tree
-                    var shape = slide.CommonSlideData.ShapeTree.Descendants<P.Shape>()
-                        .FirstOrDefault(s => s.NonVisualShapeProperties?.NonVisualDrawingProperties?.Id?.Value.ToString() == openXmlShapeId);
-
-                    if (shape?.TextBody == null)
+                    var slideId = slideIds[slideIndex];
+                    var relationshipId = slideId.RelationshipId?.Value;
+                    if (string.IsNullOrEmpty(relationshipId))
                         continue;
 
-                    // Extract the current text from the shape to compare
-                    var currentText = ExtractCurrentText(shape.TextBody);
-
-                    // Normalize both texts for comparison (trim, normalize line endings)
-                    var normalizedCurrent = NormalizeText(currentText);
-                    var normalizedNew = NormalizeText(element.Text);
-
-                    // Only update if text has actually changed
-                    if (normalizedCurrent == normalizedNew)
+                    var slidePart = (SlidePart)presentationPart.GetPartById(relationshipId);
+                    var slide = slidePart.Slide;
+                    if (slide?.CommonSlideData?.ShapeTree == null)
                         continue;
 
-                    // Only update text content — position/size/fill/font are already
-                    // correct in the original PPTX copy. Writing them back would introduce
-                    // rounding errors from the EMU → inches → EMU roundtrip.
-                    UpdateShapeText(shape.TextBody, element.Text, element.Paragraphs);
-                    slideModified = true;
+                    bool slideModified = false;
+
+                    foreach (var element in semanticSlide.Elements)
+                    {
+                        if (string.IsNullOrWhiteSpace(element.Text))
+                            continue;
+
+                        var openXmlShapeId = element.Id.StartsWith("element_")
+                            ? element.Id.Substring(8)
+                            : element.Id;
+
+                        var shape = slide.CommonSlideData.ShapeTree.Descendants<P.Shape>()
+                            .FirstOrDefault(s => s.NonVisualShapeProperties?.NonVisualDrawingProperties?.Id?.Value.ToString() == openXmlShapeId);
+
+                        if (shape?.TextBody == null)
+                            continue;
+
+                        var currentText = ExtractCurrentText(shape.TextBody);
+                        var normalizedCurrent = NormalizeText(currentText);
+                        var normalizedNew = NormalizeText(element.Text);
+
+                        if (normalizedCurrent == normalizedNew)
+                            continue;
+
+                        UpdateShapeText(shape.TextBody, element.Text, element.Paragraphs);
+                        slideModified = true;
+                    }
+
+                    if (slideModified)
+                        slide.Save();
                 }
 
-                // Only save the slide if we actually modified something
-                if (slideModified)
-                    slide.Save();
+                presentationPart.Presentation.Save();
             }
 
-            presentationPart.Presentation.Save();
-        }
+            memoryStream = new MemoryStream();
+            using (var fileStream = System.IO.File.OpenRead(tempFilePath))
+                await fileStream.CopyToAsync(memoryStream);
 
-        // Read the modified file into a memory stream
-        var memoryStream = new MemoryStream();
-        using (var fileStream = System.IO.File.OpenRead(tempFilePath))
+            memoryStream.Position = 0;
+            return memoryStream;
+        }
+        catch
         {
-            await fileStream.CopyToAsync(memoryStream);
+            // FIX: Dispose the stream if we fail after creating it but before returning.
+            memoryStream?.Dispose();
+            throw;
         }
-
-        try { System.IO.File.Delete(tempFilePath); } catch { /* Ignore cleanup errors */ }
-
-        memoryStream.Position = 0;
-        return memoryStream;
+        finally
+        {
+            // FIX: Temp file is always deleted — even when an exception is thrown mid-render.
+            try { System.IO.File.Delete(tempFilePath); } catch { /* ignore cleanup errors */ }
+        }
     }
 
     /// <summary>
@@ -118,28 +122,40 @@ public class OpenXmlRenderer : IOpenXmlRenderer
         for (int i = 0; i < paragraphs.Count; i++)
         {
             var paragraph = paragraphs[i];
-            foreach (var run in paragraph.Elements<D.Run>())
+
+            // FIX: Iterate children in document order rather than runs and fields separately.
+            // The previous approach silently skipped <a:br> (LineBreak) elements, causing
+            // comparison mismatches on any shape containing in-paragraph soft line breaks —
+            // those shapes were always flagged as changed and needlessly rewritten.
+            foreach (var child in paragraph.ChildElements)
             {
-                var text = run.GetFirstChild<D.Text>();
-                if (text != null)
-                    sb.Append(text.Text);
+                if (child is D.Run run)
+                {
+                    var text = run.GetFirstChild<D.Text>();
+                    if (text != null)
+                        sb.Append(text.Text);
+                }
+                else if (child is D.Field field)
+                {
+                    var text = field.GetFirstChild<D.Text>();
+                    if (text != null)
+                        sb.Append(text.Text);
+                }
+                else if (child is D.Break) // <a:br> — soft line break within a paragraph
+                {
+                    sb.Append('\n');
+                }
             }
-            // Also check for fields (like slide numbers, dates)
-            foreach (var field in paragraph.Elements<D.Field>())
-            {
-                var text = field.GetFirstChild<D.Text>();
-                if (text != null)
-                    sb.Append(text.Text);
-            }
-            // Add newline between paragraphs (but not after the last one)
+
             if (i < paragraphs.Count - 1)
                 sb.Append('\n');
         }
+
         return sb.ToString();
     }
 
     /// <summary>
-    /// Normalizes text for comparison: trims, normalizes line endings, collapses whitespace.
+    /// Normalizes text for comparison: trims and normalizes line endings.
     /// </summary>
     private string NormalizeText(string text)
     {
@@ -159,7 +175,6 @@ public class OpenXmlRenderer : IOpenXmlRenderer
     /// </summary>
     private static string ToOoxmlAutoNumberString(string stored)
     {
-        // Full set of valid camelCase XML attribute values from the OOXML spec
         var known = new HashSet<string>(StringComparer.Ordinal)
         {
             "alphaLcParenBoth", "alphaLcParenR",  "alphaLcPeriod",
@@ -176,11 +191,9 @@ public class OpenXmlRenderer : IOpenXmlRenderer
             "thai1Period",      "thai2Period",    "thaiAlphaPeriod",
         };
 
-        // Already a valid camelCase XML value?
         if (known.Contains(stored))
             return stored;
 
-        // Stored as PascalCase C# enum name (e.g. "ArabicPeriod") — convert to camelCase
         if (!string.IsNullOrEmpty(stored))
         {
             var camel = char.ToLowerInvariant(stored[0]) + stored.Substring(1);
@@ -188,42 +201,104 @@ public class OpenXmlRenderer : IOpenXmlRenderer
                 return camel;
         }
 
-        // Safe fallback
         return "arabicPeriod";
+    }
+
+    /// <summary>
+    /// Inserts a bullet element at the correct position within ParagraphProperties.
+    /// Per the CT_TextParagraphProperties schema, bullet elements (buNone/buChar/buAutoNum)
+    /// must appear before tabLst, defRPr, and extLst. AppendChild would place them after
+    /// defRPr, violating the schema and breaking strict-mode readers such as LibreOffice.
+    /// </summary>
+    private static void InsertBulletElement(D.ParagraphProperties pPr, OpenXmlElement bulletElement)
+    {
+        var anchor = pPr.ChildElements
+            .FirstOrDefault(c => c.LocalName == "tabLst"
+                              || c.LocalName == "defRPr"
+                              || c.LocalName == "extLst");
+        if (anchor != null)
+            pPr.InsertBefore(bulletElement, anchor);
+        else
+            pPr.AppendChild(bulletElement);
+    }
+
+    /// <summary>
+    /// Inserts a run (<a:r>) before <a:endParaRPr> if one exists, or appends it otherwise.
+    ///
+    /// FIX: The OOXML CT_TextParagraph schema requires runs to appear before
+    /// <a:endParaRPr>. After stripping existing runs, <a:endParaRPr> remains as the
+    /// last child of the paragraph. Using AppendChild() then places every new run
+    /// after it, violating the schema. PowerPoint silently discards runs that follow
+    /// <a:endParaRPr>, so the shape renders as blank even though the XML contains text.
+    /// Inserting before <a:endParaRPr> restores the correct child order:
+    ///   pPr → [runs] → endParaRPr
+    /// </summary>
+    private static void InsertRunBeforeEndParaRPr(D.Paragraph paragraph, D.Run run)
+    {
+        var endParaRPr = paragraph.GetFirstChild<D.EndParagraphRunProperties>();
+        if (endParaRPr != null)
+            paragraph.InsertBefore(run, endParaRPr);
+        else
+            paragraph.AppendChild(run);
+    }
+
+    /// <summary>
+    /// Creates a <a:t> text element with xml:space="preserve" set unconditionally.
+    ///
+    /// FIX: The OpenXML SDK version used here does not expose a typed Space property on
+    /// D.Text (DocumentFormat.OpenXml.Drawing.Text). Setting the attribute via
+    /// SetAttribute is the version-agnostic approach and produces identical XML output.
+    /// Without xml:space="preserve", the XML serialiser is free to collapse or strip
+    /// whitespace at text-node boundaries — leading spaces, trailing spaces, and the
+    /// spaces that sit between adjacent runs are all at risk. This causes words to run
+    /// together whenever a formatted segment ends with a space character.
+    /// </summary>
+    private static D.Text CreatePreservedText(string text)
+    {
+        var t = new D.Text(text);
+        t.SetAttribute(new OpenXmlAttribute("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve"));
+        return t;
     }
 
     /// <summary>
     /// Updates text content while preserving original formatting as much as possible.
     /// Uses the SemanticElement's Paragraphs template to restore exact bullet types,
     /// numbering formats, and run-level styles (colors/fonts) per line.
+    ///
+    /// Key behavior: performs a proportional mapping between the new text words
+    /// and the original template runs. Each word in the new text is assigned to
+    /// a run based on its proportional position within the original template text.
+    /// Whenever ANY formatting property differs between adjacent words' assigned
+    /// runs, a new OpenXML run is created. This preserves multi-colored/multi-styled
+    /// text and degrades gracefully when the AI significantly rewrites a line.
     /// </summary>
     private void UpdateShapeText(P.TextBody textBody, string newText, List<TextParagraph>? templateParagraphs)
     {
         var existingParagraphs = textBody.Elements<D.Paragraph>().ToList();
 
-        // Normalize line endings and unescape literal \n if the LLM generated them
         var normalizedText = newText.Replace("\\n", "\n").Replace("\r\n", "\n").Replace("\r", "\n");
         var newLines = normalizedText.Split('\n');
 
-        // Ensure we have enough paragraphs in the text body
         if (newLines.Length > existingParagraphs.Count && existingParagraphs.Count > 0)
         {
             var lastPara = existingParagraphs.Last();
             for (int i = existingParagraphs.Count; i < newLines.Length; i++)
             {
                 var clone = (D.Paragraph)lastPara.CloneNode(true);
+                // FIX: CloneNode copies <a:fld> id attributes verbatim. OOXML requires
+                // field IDs to be unique within a file — duplicate IDs cause stale or
+                // incorrect field rendering (slide numbers, dates, etc.).
+                foreach (var field in clone.Descendants<D.Field>())
+                    field.Id = "{" + Guid.NewGuid().ToString("D").ToUpper() + "}";
                 textBody.AppendChild(clone);
                 existingParagraphs.Add(clone);
             }
         }
 
-        // Update each line
         for (int i = 0; i < newLines.Length; i++)
         {
             var paragraph = existingParagraphs[i];
-            var runs = paragraph.Elements<D.Run>().ToList();
 
-            // Look up template paragraph if available (fallback to last available if we expanded)
             var templateIndex = templateParagraphs != null
                 ? Math.Min(i, templateParagraphs.Count - 1)
                 : -1;
@@ -240,7 +315,6 @@ public class OpenXmlRenderer : IOpenXmlRenderer
                     paragraph.InsertAt(pPr, 0);
                 }
 
-                // Restore alignment
                 if (tPara.Alignment != null)
                 {
                     pPr.Alignment = tPara.Alignment switch
@@ -253,122 +327,313 @@ public class OpenXmlRenderer : IOpenXmlRenderer
                     };
                 }
 
-                // Restore indent
                 if (tPara.IndentLevel > 0)
                     pPr.Level = tPara.IndentLevel;
 
-                // Remove any existing bullet/numbering definitions before re-applying
-                pPr.RemoveAllChildren<D.AutoNumberedBullet>();
-                pPr.RemoveAllChildren<D.CharacterBullet>();
-                pPr.RemoveAllChildren<D.NoBullet>();
+                // FIX: Remove ALL bullet-related children, not just the three type nodes.
+                // Previously, only buNone/buChar/buAutoNum were removed, leaving orphaned
+                // <a:buClr>, <a:buSz*>, and <a:buFont*> children that referenced a bullet
+                // type that no longer existed — producing a structurally invalid <pPr>.
+                var bulletLocalNames = new HashSet<string>
+                {
+                    "buNone",  "buChar",   "buAutoNum", "buBlip",  // bullet type
+                    "buClr",   "buClrTx",                           // bullet color
+                    "buSzPct", "buSzPts",  "buSzTx",               // bullet size
+                    "buFont",  "buFontTx"                           // bullet font
+                };
+                foreach (var child in pPr.ChildElements
+                    .Where(c => bulletLocalNames.Contains(c.LocalName))
+                    .ToList())
+                {
+                    child.Remove();
+                }
 
                 if (tPara.BulletType == "numbered" && tPara.NumberingFormat != null)
                 {
-                    // FIXED: ToOoxmlAutoNumberString guarantees a valid camelCase XML string.
-                    // Passing an invalid/PascalCase string to TextAutoNumberSchemeValues does NOT
-                    // throw at construction time — it throws later inside slide.Save() during
-                    // XML serialization, producing the 500 "not valid according to enum type" error.
                     var xmlValue = ToOoxmlAutoNumberString(tPara.NumberingFormat);
-                    pPr.AppendChild(new D.AutoNumberedBullet
+                    InsertBulletElement(pPr, new D.AutoNumberedBullet
                     {
                         Type = new D.TextAutoNumberSchemeValues(xmlValue)
                     });
                 }
                 else if (tPara.BulletType == "bullet")
                 {
-                    pPr.AppendChild(new D.CharacterBullet { Char = "•" });
+                    InsertBulletElement(pPr, new D.CharacterBullet { Char = "•" });
                 }
-                else if (tPara.BulletType == null)
-                {
-                    pPr.AppendChild(new D.NoBullet());
-                }
+                // FIX: Do NOT write <a:buNone/> when BulletType is null. Null means the
+                // template recorded no preference — it does not mean "explicitly no bullet."
+                // Writing buNone would override bullets inherited from the slide master/layout,
+                // silently stripping theme bullets from every round-tripped paragraph.
             }
 
-            // 2. Apply Run-Level Text and Styling
-            if (runs.Count > 0)
+            // 2. Apply Run-Level Text and Styling — remove all existing runs and line breaks,
+            //    then rebuild from scratch using the word-proportional segment map.
+            // FIX: Also remove <a:br> (LineBreak) elements before rebuilding. Previously only
+            // runs were removed; any <a:br> left behind would orphan after the new runs were
+            // appended, producing out-of-order line break artifacts in the output.
+            foreach (var existingRun in paragraph.Elements<D.Run>().ToList())
+                existingRun.Remove();
+            foreach (var lineBreak in paragraph.Elements<D.Break>().ToList())
+                lineBreak.Remove();
+
+            var lineText = newLines[i];
+
+            if (tPara != null && tPara.Runs.Count > 0)
             {
-                // Put all the new text into the first run
-                var firstRunText = runs[0].GetFirstChild<D.Text>();
-                if (firstRunText != null)
-                    firstRunText.Text = newLines[i];
-                else
-                    runs[0].AppendChild(new D.Text(newLines[i]));
+                var templateRunMap = BuildCharacterRunMap(tPara.Runs);
+                var segments = SplitNewTextIntoFormattedSegments(lineText, templateRunMap, tPara.Runs);
 
-                // Apply template styling to the first run
-                if (tPara != null && tPara.Runs.Count > 0)
+                foreach (var segment in segments)
                 {
-                    var tRun = tPara.Runs[0]; // Usually the first run dictates the style
-                    var rPr = runs[0].RunProperties;
-                    if (rPr == null)
-                    {
-                        rPr = new D.RunProperties { Language = "en-US", Dirty = false };
-                        runs[0].InsertBefore(rPr, runs[0].GetFirstChild<D.Text>());
-                    }
-
-                    if (tRun.FontSize.HasValue)
-                        rPr.FontSize = (int)(tRun.FontSize.Value * 100);
-
-                    if (tRun.Bold) rPr.Bold = true;
-                    if (tRun.Italic) rPr.Italic = true;
-
-                    // Reconstruct color if we have it
-                    if (!string.IsNullOrEmpty(tRun.FontColor) && tRun.FontColor.StartsWith("#"))
-                    {
-                        var hex = tRun.FontColor.Substring(1);
-                        var solidFill = rPr.GetFirstChild<D.SolidFill>();
-                        if (solidFill == null)
-                        {
-                            solidFill = new D.SolidFill();
-                            rPr.AppendChild(solidFill);
-                        }
-
-                        var rgbColor = solidFill.GetFirstChild<D.RgbColorModelHex>();
-                        if (rgbColor == null)
-                        {
-                            rgbColor = new D.RgbColorModelHex();
-                            solidFill.AppendChild(rgbColor);
-                        }
-                        rgbColor.Val = hex;
-                    }
+                    var r = new D.Run();
+                    var rPr = BuildRunProperties(segment.TemplateRun);
+                    r.AppendChild(rPr);
+                    // FIX: Use CreatePreservedText so xml:space="preserve" is always set —
+                    // without it the XML serialiser strips leading/trailing whitespace from
+                    // text nodes, merging words at run boundaries (e.g. "Hello " + "World"
+                    // becomes "HelloWorld"). D.Text does not expose a Space property in this
+                    // SDK version, so the attribute is written via SetAttribute instead.
+                    r.AppendChild(CreatePreservedText(segment.Text));
+                    // FIX: Insert before <a:endParaRPr> — see InsertRunBeforeEndParaRPr.
+                    InsertRunBeforeEndParaRPr(paragraph, r);
                 }
 
-                // Physically remove all subsequent runs instead of just emptying them
-                for (int j = 1; j < runs.Count; j++)
+                if (segments.Count == 0)
                 {
-                    runs[j].Remove();
+                    // Empty line — add a placeholder run to preserve the paragraph's font.
+                    var r = new D.Run();
+                    r.AppendChild(BuildRunProperties(tPara.Runs[0]));
+                    // FIX: CreatePreservedText and InsertRunBeforeEndParaRPr — same reasons above.
+                    r.AppendChild(CreatePreservedText(""));
+                    InsertRunBeforeEndParaRPr(paragraph, r);
                 }
             }
             else
             {
-                // No runs in this paragraph — add one with default/template properties
+                // No template — create a single run with default properties.
                 var r = new D.Run();
-                var rPr = new D.RunProperties { Language = "en-US", Dirty = false };
-
-                if (tPara != null && tPara.Runs.Count > 0)
-                {
-                    var tRun = tPara.Runs[0];
-                    if (tRun.FontSize.HasValue) rPr.FontSize = (int)(tRun.FontSize.Value * 100);
-                    if (tRun.Bold) rPr.Bold = true;
-                    if (tRun.Italic) rPr.Italic = true;
-                    if (!string.IsNullOrEmpty(tRun.FontColor) && tRun.FontColor.StartsWith("#"))
-                    {
-                        rPr.AppendChild(new D.SolidFill(new D.RgbColorModelHex { Val = tRun.FontColor.Substring(1) }));
-                    }
-                }
-
-                r.AppendChild(rPr);
-                r.AppendChild(new D.Text(newLines[i]));
-                paragraph.AppendChild(r);
+                r.AppendChild(new D.RunProperties { Language = "en-US", Dirty = false });
+                // FIX: CreatePreservedText and InsertRunBeforeEndParaRPr — same reasons above.
+                r.AppendChild(CreatePreservedText(lineText));
+                InsertRunBeforeEndParaRPr(paragraph, r);
             }
         }
 
-        // If we have fewer new lines than existing paragraphs, remove the excess paragraphs
         if (newLines.Length < existingParagraphs.Count)
         {
             for (int i = newLines.Length; i < existingParagraphs.Count; i++)
-            {
                 existingParagraphs[i].Remove();
+        }
+    }
+
+    /// <summary>
+    /// Builds a map: character position (0-based) → index into templateRuns.
+    /// For example, runs ["Hello ", "World"] produces [0,0,0,0,0,0,1,1,1,1,1].
+    /// </summary>
+    private List<int> BuildCharacterRunMap(List<TextRun> templateRuns)
+    {
+        var map = new List<int>();
+        for (int runIdx = 0; runIdx < templateRuns.Count; runIdx++)
+        {
+            var text = templateRuns[runIdx].Text ?? "";
+            for (int c = 0; c < text.Length; c++)
+                map.Add(runIdx);
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Splits text into whole-word tokens, each consisting of optional leading
+    /// spaces followed by non-space characters.
+    ///
+    /// Example: "Hello World and more" → [("Hello", 0), (" World", 5), (" and", 11), (" more", 15)]
+    ///
+    /// Keeping spaces glued to the word that follows them ensures that every
+    /// formatting boundary produced by SplitNewTextIntoFormattedSegments falls
+    /// at a natural inter-word gap — never in the middle of a word.
+    /// </summary>
+    private static List<(string Text, int StartPos)> SplitIntoWordTokens(string text)
+    {
+        var tokens = new List<(string, int)>();
+        int i = 0;
+        while (i < text.Length)
+        {
+            int start = i;
+            // Consume leading spaces (glued to the following word)
+            while (i < text.Length && text[i] == ' ')
+                i++;
+            // Consume non-space characters (the actual word)
+            while (i < text.Length && text[i] != ' ')
+                i++;
+            if (i > start)
+                tokens.Add((text.Substring(start, i - start), start));
+        }
+        return tokens;
+    }
+
+    /// <summary>
+    /// Splits the new line text into segments, each tagged with the TextRun whose
+    /// formatting should apply.
+    ///
+    /// FIX: Switched from character-level to word-level proportional mapping.
+    /// The previous character-level approach could assign different runs to adjacent
+    /// characters of the same word whenever the new text was shorter than the template.
+    ///
+    /// Root cause: given template "Hello World..." where "Hello" (5 chars) is run 0
+    /// (red) and " World..." (15 chars) is run 1 (black) — originalLength = 20 — and
+    /// new text "Hello" (5 chars):
+    ///
+    ///   pos 0 'H': round(0/4 × 19) =  0 → run 0 ✓ red
+    ///   pos 1 'e': round(1/4 × 19) =  5 → run 1 ✗ black  ← mid-word!
+    ///   pos 2 'l': round(2/4 × 19) = 10 → run 1 ✗ black
+    ///   pos 3 'l': round(3/4 × 19) = 14 → run 1 ✗ black
+    ///   pos 4 'o': round(4/4 × 19) = 19 → run 1 ✗ black
+    ///
+    /// Only "H" rendered red; "ello" turned black — a partial mis-coloring of the
+    /// first word.
+    ///
+    /// Fix: tokenize into whole words first via SplitIntoWordTokens, then map each
+    /// WORD (not each character) proportionally to a run using the position of the
+    /// word's first non-space character as the anchor. Because an entire word is
+    /// always assigned to one run, formatting boundaries can only ever fall between
+    /// words — never inside one.
+    /// </summary>
+    private List<FormattedSegment> SplitNewTextIntoFormattedSegments(
+        string newText,
+        List<int> charRunMap,
+        List<TextRun> templateRuns)
+    {
+        var segments = new List<FormattedSegment>();
+        if (string.IsNullOrEmpty(newText))
+            return segments;
+
+        var lastRunIdx = templateRuns.Count - 1;
+        var originalLength = charRunMap.Count;
+        var sb = new StringBuilder();
+        int currentRunIdx = -1;
+
+        // FIX: Operate on whole-word tokens so that formatting boundaries only
+        // ever fall at spaces — never mid-word. Each token is (leading spaces +
+        // word); its anchor for the proportional lookup is the position of the
+        // first non-space character, i.e. the actual start of the word.
+        var tokens = SplitIntoWordTokens(newText);
+
+        foreach (var (tokenText, tokenStart) in tokens)
+        {
+            // Anchor the proportional lookup to the first non-space character of
+            // the token (skipping any leading spaces). Using the word's true start
+            // position gives the most accurate run assignment for that word.
+            int anchorPos = tokenStart;
+            while (anchorPos < tokenStart + tokenText.Length && newText[anchorPos] == ' ')
+                anchorPos++;
+
+            // Edge case: token consists entirely of spaces — fall back to the
+            // token start so we still assign it to some run rather than throwing.
+            if (anchorPos >= tokenStart + tokenText.Length)
+                anchorPos = tokenStart;
+
+            int mappedRunIdx;
+            if (originalLength == 0)
+            {
+                mappedRunIdx = lastRunIdx;
+            }
+            else
+            {
+                // Map the word's anchor position proportionally onto the original
+                // template length so that run-boundary percentages are preserved
+                // regardless of how much the total text length has changed.
+                var proportionalPos = (int)Math.Round(
+                    (double)anchorPos / Math.Max(newText.Length - 1, 1) * (originalLength - 1));
+                proportionalPos = Math.Clamp(proportionalPos, 0, originalLength - 1);
+                mappedRunIdx = charRunMap[proportionalPos];
+            }
+
+            if (currentRunIdx < 0)
+            {
+                currentRunIdx = mappedRunIdx;
+                sb.Append(tokenText);
+            }
+            else if (mappedRunIdx != currentRunIdx &&
+                     !RunFormattingEqual(templateRuns[currentRunIdx], templateRuns[mappedRunIdx]))
+            {
+                segments.Add(new FormattedSegment
+                {
+                    Text = sb.ToString(),
+                    TemplateRun = templateRuns[currentRunIdx]
+                });
+                sb.Clear();
+                currentRunIdx = mappedRunIdx;
+                sb.Append(tokenText);
+            }
+            else
+            {
+                sb.Append(tokenText);
             }
         }
+
+        if (sb.Length > 0)
+        {
+            segments.Add(new FormattedSegment
+            {
+                Text = sb.ToString(),
+                TemplateRun = templateRuns[currentRunIdx < 0 ? 0 : currentRunIdx]
+            });
+        }
+
+        return segments;
+    }
+
+    /// <summary>
+    /// Compares two TextRun instances for formatting equality across all properties.
+    /// </summary>
+    private bool RunFormattingEqual(TextRun a, TextRun b)
+    {
+        if (a.FontSize != b.FontSize) return false;
+        if (a.Bold != b.Bold) return false;
+        if (a.Italic != b.Italic) return false;
+        if (!string.Equals(a.FontColor, b.FontColor, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.Equals(a.FontFamily, b.FontFamily, StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Builds OpenXML RunProperties from a TextRun template, reproducing all stored
+    /// formatting: font size, bold, italic, color, and font family.
+    /// Child elements are appended in CT_TextCharacterProperties schema order:
+    /// fill elements (solidFill) before font elements (latin), per the OOXML spec.
+    /// </summary>
+    private D.RunProperties BuildRunProperties(TextRun tRun)
+    {
+        var rPr = new D.RunProperties { Language = "en-US", Dirty = false };
+
+        if (tRun.FontSize.HasValue)
+            rPr.FontSize = (int)(tRun.FontSize.Value * 100);
+
+        if (tRun.Bold)
+            rPr.Bold = true;
+
+        if (tRun.Italic)
+            rPr.Italic = true;
+
+        // solidFill must come before latin per CT_TextCharacterProperties schema order.
+        if (!string.IsNullOrEmpty(tRun.FontColor) && tRun.FontColor.StartsWith("#"))
+        {
+            var hex = tRun.FontColor.Substring(1);
+            rPr.AppendChild(new D.SolidFill(new D.RgbColorModelHex { Val = hex }));
+        }
+
+        if (!string.IsNullOrEmpty(tRun.FontFamily))
+            rPr.AppendChild(new D.LatinFont { Typeface = tRun.FontFamily });
+
+        return rPr;
+    }
+
+    /// <summary>
+    /// Holds a text segment and the template run whose formatting applies to it.
+    /// </summary>
+    private class FormattedSegment
+    {
+        public string Text { get; set; } = string.Empty;
+        public TextRun TemplateRun { get; set; } = new();
     }
 }

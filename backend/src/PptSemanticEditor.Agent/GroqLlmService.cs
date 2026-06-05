@@ -141,7 +141,7 @@ public class GroqLlmService : ILlmService
                 new { role = "user", content = userPrompt }
             },
             temperature = 0.3,
-            max_tokens = 4096,
+            max_tokens = 8192,
             response_format = new { type = "json_object" }
         };
 
