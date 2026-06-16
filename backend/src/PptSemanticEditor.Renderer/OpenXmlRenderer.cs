@@ -319,13 +319,15 @@ public class OpenXmlRenderer : IOpenXmlRenderer
             // was breaking numbering continuity (every item rendered as "1."), and
             // overwriting alignment was misaligning the first line.
 
-            // 2. Apply Run-Level Text and Styling — remove all existing runs, line breaks,
-            //    AND field elements, then rebuild from scratch using the word-proportional
-            //    segment map.
-            // Field elements (<a:fld>) must also be removed: the parser already baked their
-            // text content into the extracted string, so the AI's rewritten text includes it.
-            // Leaving the field behind causes duplicate rendering — the field text AND the
-            // new run text both appear, pushing the line past the shape boundary.
+            // 2. Apply Run-Level Text and Styling.
+            // Save the first existing run's properties BEFORE stripping. This preserves
+            // spacing, kerning, East Asian/complex-script fonts, and other attributes
+            // that the TextRun template model doesn't capture. New runs are built from
+            // clones of these saved properties with template-specific overrides applied.
+            var savedBaseRunProps = paragraph.Elements<D.Run>()
+                .FirstOrDefault()?.RunProperties?.CloneNode(true) as D.RunProperties;
+
+            // Strip all runs, breaks, and field elements.
             foreach (var existingRun in paragraph.Elements<D.Run>().ToList())
                 existingRun.Remove();
             foreach (var lineBreak in paragraph.Elements<D.Break>().ToList())
@@ -343,15 +345,11 @@ public class OpenXmlRenderer : IOpenXmlRenderer
                 foreach (var segment in segments)
                 {
                     var r = new D.Run();
-                    var rPr = BuildRunProperties(segment.TemplateRun);
+                    var rPr = savedBaseRunProps != null
+                        ? CloneWithTemplateOverrides(savedBaseRunProps, segment.TemplateRun)
+                        : BuildRunProperties(segment.TemplateRun);
                     r.AppendChild(rPr);
-                    // FIX: Use CreatePreservedText so xml:space="preserve" is always set —
-                    // without it the XML serialiser strips leading/trailing whitespace from
-                    // text nodes, merging words at run boundaries (e.g. "Hello " + "World"
-                    // becomes "HelloWorld"). D.Text does not expose a Space property in this
-                    // SDK version, so the attribute is written via SetAttribute instead.
                     r.AppendChild(CreatePreservedText(segment.Text));
-                    // FIX: Insert before <a:endParaRPr> — see InsertRunBeforeEndParaRPr.
                     InsertRunBeforeEndParaRPr(paragraph, r);
                 }
 
@@ -359,18 +357,28 @@ public class OpenXmlRenderer : IOpenXmlRenderer
                 {
                     // Empty line — add a placeholder run to preserve the paragraph's font.
                     var r = new D.Run();
-                    r.AppendChild(BuildRunProperties(tPara.Runs[0]));
-                    // FIX: CreatePreservedText and InsertRunBeforeEndParaRPr — same reasons above.
+                    var rPr = savedBaseRunProps != null
+                        ? CloneWithTemplateOverrides(savedBaseRunProps, tPara.Runs[0])
+                        : BuildRunProperties(tPara.Runs[0]);
+                    r.AppendChild(rPr);
                     r.AppendChild(CreatePreservedText(""));
                     InsertRunBeforeEndParaRPr(paragraph, r);
                 }
             }
             else
             {
-                // No template — create a single run with default properties.
+                // No template — use saved base properties or create default.
                 var r = new D.Run();
-                r.AppendChild(new D.RunProperties { Language = "en-US", Dirty = false });
-                // FIX: CreatePreservedText and InsertRunBeforeEndParaRPr — same reasons above.
+                if (savedBaseRunProps != null)
+                {
+                    var rPr = (D.RunProperties)savedBaseRunProps.CloneNode(true);
+                    rPr.Dirty = false;
+                    r.AppendChild(rPr);
+                }
+                else
+                {
+                    r.AppendChild(new D.RunProperties { Language = "en-US", Dirty = false });
+                }
                 r.AppendChild(CreatePreservedText(lineText));
                 InsertRunBeforeEndParaRPr(paragraph, r);
             }
@@ -554,10 +562,73 @@ public class OpenXmlRenderer : IOpenXmlRenderer
     }
 
     /// <summary>
+    /// Clones saved PPTX run properties (preserving spacing, kerning, East Asian fonts,
+    /// etc.) and overlays only the visual properties tracked by the TextRun template.
+    /// This preserves all original formatting attributes that BuildRunProperties would lose.
+    /// </summary>
+    private D.RunProperties CloneWithTemplateOverrides(D.RunProperties savedBase, TextRun tRun)
+    {
+        var rPr = (D.RunProperties)savedBase.CloneNode(true);
+        rPr.Language ??= "en-US";
+        rPr.Dirty = false;
+
+        // Override font size if template specifies one
+        if (tRun.FontSize.HasValue)
+            rPr.FontSize = (int)(tRun.FontSize.Value * 100);
+
+        // Override bold/italic
+        if (tRun.Bold)
+            rPr.Bold = true;
+        if (tRun.Italic)
+            rPr.Italic = true;
+
+        // Override font color
+        if (!string.IsNullOrEmpty(tRun.FontColor) && tRun.FontColor.StartsWith("#"))
+        {
+            var hex = tRun.FontColor.Substring(1);
+            var existingFill = rPr.GetFirstChild<D.SolidFill>();
+            if (existingFill != null)
+            {
+                var rgb = existingFill.GetFirstChild<D.RgbColorModelHex>();
+                if (rgb != null)
+                    rgb.Val = hex;
+                else
+                {
+                    existingFill.RemoveAllChildren();
+                    existingFill.AppendChild(new D.RgbColorModelHex { Val = hex });
+                }
+            }
+            else
+            {
+                // Insert solidFill before latin font per CT_TextCharacterProperties schema order
+                var anchor = rPr.GetFirstChild<D.LatinFont>();
+                var fill = new D.SolidFill(new D.RgbColorModelHex { Val = hex });
+                if (anchor != null)
+                    rPr.InsertBefore(fill, anchor);
+                else
+                    rPr.AppendChild(fill);
+            }
+        }
+
+        // Override font family
+        if (!string.IsNullOrEmpty(tRun.FontFamily))
+        {
+            var existingLatin = rPr.GetFirstChild<D.LatinFont>();
+            if (existingLatin != null)
+                existingLatin.Typeface = tRun.FontFamily;
+            else
+                rPr.AppendChild(new D.LatinFont { Typeface = tRun.FontFamily });
+        }
+
+        return rPr;
+    }
+
+    /// <summary>
     /// Builds OpenXML RunProperties from a TextRun template, reproducing all stored
     /// formatting: font size, bold, italic, color, and font family.
     /// Child elements are appended in CT_TextCharacterProperties schema order:
     /// fill elements (solidFill) before font elements (latin), per the OOXML spec.
+    /// Used as a fallback when no existing run properties are available to clone.
     /// </summary>
     private D.RunProperties BuildRunProperties(TextRun tRun)
     {
