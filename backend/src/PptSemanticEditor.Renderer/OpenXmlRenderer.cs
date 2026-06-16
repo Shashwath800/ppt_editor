@@ -279,6 +279,14 @@ public class OpenXmlRenderer : IOpenXmlRenderer
         var normalizedText = newText.Replace("\\n", "\n").Replace("\r\n", "\n").Replace("\r", "\n");
         var newLines = normalizedText.Split('\n');
 
+        // Trim trailing empty lines that the AI may produce (trailing '\n').
+        // Without this, Split creates an extra empty string that clones the last
+        // paragraph, adding a spurious empty paragraph at the end of the text body.
+        while (newLines.Length > 1 && string.IsNullOrEmpty(newLines[^1]))
+        {
+            Array.Resize(ref newLines, newLines.Length - 1);
+        }
+
         if (newLines.Length > existingParagraphs.Count && existingParagraphs.Count > 0)
         {
             var lastPara = existingParagraphs.Last();
@@ -305,76 +313,25 @@ public class OpenXmlRenderer : IOpenXmlRenderer
 
             var tPara = templateIndex >= 0 ? templateParagraphs![templateIndex] : null;
 
-            // 1. Apply Paragraph-Level Styling (Bullets/Numbering/Alignment)
-            if (tPara != null)
-            {
-                var pPr = paragraph.GetFirstChild<D.ParagraphProperties>();
-                if (pPr == null)
-                {
-                    pPr = new D.ParagraphProperties();
-                    paragraph.InsertAt(pPr, 0);
-                }
+            // Paragraph-level properties (bullets, numbering, alignment, indent) are
+            // left untouched. The existing PPTX paragraphs already carry the correct
+            // formatting from the original file. Re-creating AutoNumberedBullet elements
+            // was breaking numbering continuity (every item rendered as "1."), and
+            // overwriting alignment was misaligning the first line.
 
-                if (tPara.Alignment != null)
-                {
-                    pPr.Alignment = tPara.Alignment switch
-                    {
-                        "left"    => D.TextAlignmentTypeValues.Left,
-                        "center"  => D.TextAlignmentTypeValues.Center,
-                        "right"   => D.TextAlignmentTypeValues.Right,
-                        "justify" => D.TextAlignmentTypeValues.Justified,
-                        _         => pPr.Alignment
-                    };
-                }
-
-                if (tPara.IndentLevel > 0)
-                    pPr.Level = tPara.IndentLevel;
-
-                // FIX: Remove ALL bullet-related children, not just the three type nodes.
-                // Previously, only buNone/buChar/buAutoNum were removed, leaving orphaned
-                // <a:buClr>, <a:buSz*>, and <a:buFont*> children that referenced a bullet
-                // type that no longer existed — producing a structurally invalid <pPr>.
-                var bulletLocalNames = new HashSet<string>
-                {
-                    "buNone",  "buChar",   "buAutoNum", "buBlip",  // bullet type
-                    "buClr",   "buClrTx",                           // bullet color
-                    "buSzPct", "buSzPts",  "buSzTx",               // bullet size
-                    "buFont",  "buFontTx"                           // bullet font
-                };
-                foreach (var child in pPr.ChildElements
-                    .Where(c => bulletLocalNames.Contains(c.LocalName))
-                    .ToList())
-                {
-                    child.Remove();
-                }
-
-                if (tPara.BulletType == "numbered" && tPara.NumberingFormat != null)
-                {
-                    var xmlValue = ToOoxmlAutoNumberString(tPara.NumberingFormat);
-                    InsertBulletElement(pPr, new D.AutoNumberedBullet
-                    {
-                        Type = new D.TextAutoNumberSchemeValues(xmlValue)
-                    });
-                }
-                else if (tPara.BulletType == "bullet")
-                {
-                    InsertBulletElement(pPr, new D.CharacterBullet { Char = "•" });
-                }
-                // FIX: Do NOT write <a:buNone/> when BulletType is null. Null means the
-                // template recorded no preference — it does not mean "explicitly no bullet."
-                // Writing buNone would override bullets inherited from the slide master/layout,
-                // silently stripping theme bullets from every round-tripped paragraph.
-            }
-
-            // 2. Apply Run-Level Text and Styling — remove all existing runs and line breaks,
-            //    then rebuild from scratch using the word-proportional segment map.
-            // FIX: Also remove <a:br> (LineBreak) elements before rebuilding. Previously only
-            // runs were removed; any <a:br> left behind would orphan after the new runs were
-            // appended, producing out-of-order line break artifacts in the output.
+            // 2. Apply Run-Level Text and Styling — remove all existing runs, line breaks,
+            //    AND field elements, then rebuild from scratch using the word-proportional
+            //    segment map.
+            // Field elements (<a:fld>) must also be removed: the parser already baked their
+            // text content into the extracted string, so the AI's rewritten text includes it.
+            // Leaving the field behind causes duplicate rendering — the field text AND the
+            // new run text both appear, pushing the line past the shape boundary.
             foreach (var existingRun in paragraph.Elements<D.Run>().ToList())
                 existingRun.Remove();
             foreach (var lineBreak in paragraph.Elements<D.Break>().ToList())
                 lineBreak.Remove();
+            foreach (var field in paragraph.Elements<D.Field>().ToList())
+                field.Remove();
 
             var lineText = newLines[i];
 

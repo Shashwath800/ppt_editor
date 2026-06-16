@@ -25,7 +25,7 @@ Return your response as a JSON object with this exact structure:
       ""reason"": ""Why this change was needed"",
       ""confidence"": 0.95,
       ""parameters"": { ""newText"": ""The rewritten text, same length as original."" },
-      ""approved"": false
+      ""approved"": true
     }
   ]
 }

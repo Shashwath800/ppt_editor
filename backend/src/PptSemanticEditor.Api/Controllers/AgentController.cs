@@ -102,9 +102,20 @@ public class AgentController : ControllerBase
             // Use current state (modified if available) so the AI sees post-rollback data
             var currentPresentation = session.ModifiedPresentation ?? session.SemanticPresentation;
             
+            // If the user prompt references a specific slide number, filter to only that slide
+            var slidesToSend = currentPresentation!.Slides;
+            var slideMatch = System.Text.RegularExpressions.Regex.Match(
+                userPrompt, @"slide\s+(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (slideMatch.Success && int.TryParse(slideMatch.Groups[1].Value, out var slideNum))
+            {
+                var filtered = slidesToSend.Where(s => s.Id == slideNum).ToList();
+                if (filtered.Count > 0)
+                    slidesToSend = filtered;
+            }
+
             // Send only text content to the LLM — no structural metadata
             // Group elements visually under each slide
-            var slideGroups = currentPresentation!.Slides.Select(slide =>
+            var slideGroups = slidesToSend.Select(slide =>
             {
                 var lines = slide.Elements
                     .Where(e => !string.IsNullOrWhiteSpace(e.Text))
@@ -128,7 +139,7 @@ public class AgentController : ControllerBase
                 Reason = a.Reason,
                 Confidence = a.Confidence,
                 Parameters = a.Parameters,
-                Approved = a.Approved
+                Approved = true // Always approve LLM-generated actions; user reviews them in the UI before applying
             }).ToList();
 
             session.ActionCommands = commands;
