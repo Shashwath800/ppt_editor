@@ -4,6 +4,7 @@ using DocumentFormat.OpenXml.Presentation;
 using PptSemanticEditor.Core.Interfaces;
 using PptSemanticEditor.Core.Models;
 using System.Text;
+using System.Text.RegularExpressions;
 
 using D = DocumentFormat.OpenXml.Drawing;
 using P = DocumentFormat.OpenXml.Presentation;
@@ -67,20 +68,58 @@ public class OpenXmlRenderer : IOpenXmlRenderer
                             ? element.Id.Substring(8)
                             : element.Id;
 
+                        // Try to find the text body — either from a regular P.Shape or a table cell
+                        OpenXmlCompositeElement? textBody = null;
+
+                        // 1. Regular shape lookup
                         var shape = slide.CommonSlideData.ShapeTree.Descendants<P.Shape>()
                             .FirstOrDefault(s => s.NonVisualShapeProperties?.NonVisualDrawingProperties?.Id?.Value.ToString() == openXmlShapeId);
 
-                        if (shape?.TextBody == null)
+                        if (shape?.TextBody != null)
+                        {
+                            textBody = shape.TextBody;
+                        }
+                        else
+                        {
+                            // 2. Table cell lookup: ID pattern is "{tableShapeId}_r{row}_c{col}"
+                            var cellMatch = Regex.Match(openXmlShapeId, @"^(.+)_r(\d+)_c(\d+)$");
+                            if (cellMatch.Success)
+                            {
+                                var tableShapeId = cellMatch.Groups[1].Value;
+                                var rowIdx = int.Parse(cellMatch.Groups[2].Value);
+                                var colIdx = int.Parse(cellMatch.Groups[3].Value);
+
+                                var graphicFrame = slide.CommonSlideData.ShapeTree.Descendants<P.GraphicFrame>()
+                                    .FirstOrDefault(gf => gf.NonVisualGraphicFrameProperties
+                                        ?.NonVisualDrawingProperties?.Id?.Value.ToString() == tableShapeId);
+
+                                if (graphicFrame != null)
+                                {
+                                    var table = graphicFrame.Descendants<D.Table>().FirstOrDefault();
+                                    var rows = table?.Elements<D.TableRow>().ToList();
+                                    if (rows != null && rowIdx < rows.Count)
+                                    {
+                                        var cells = rows[rowIdx].Elements<D.TableCell>().ToList();
+                                        if (colIdx < cells.Count)
+                                        {
+                                            textBody = cells[colIdx].GetFirstChild<D.TextBody>();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (textBody == null)
                             continue;
 
-                        var currentText = ExtractCurrentText(shape.TextBody);
+                        var currentText = ExtractCurrentText(textBody);
                         var normalizedCurrent = NormalizeText(currentText);
                         var normalizedNew = NormalizeText(element.Text);
 
                         if (normalizedCurrent == normalizedNew)
                             continue;
 
-                        UpdateShapeText(shape.TextBody, element.Text, element.Paragraphs);
+                        UpdateShapeText(textBody, element.Text, element.Paragraphs);
                         slideModified = true;
                     }
 
@@ -114,7 +153,7 @@ public class OpenXmlRenderer : IOpenXmlRenderer
     /// <summary>
     /// Extracts the current text content from a TextBody, matching the parser's extraction logic.
     /// </summary>
-    private string ExtractCurrentText(P.TextBody textBody)
+    private string ExtractCurrentText(OpenXmlCompositeElement textBody)
     {
         var sb = new StringBuilder();
         var paragraphs = textBody.Elements<D.Paragraph>().ToList();
@@ -272,7 +311,7 @@ public class OpenXmlRenderer : IOpenXmlRenderer
     /// runs, a new OpenXML run is created. This preserves multi-colored/multi-styled
     /// text and degrades gracefully when the AI significantly rewrites a line.
     /// </summary>
-    private void UpdateShapeText(P.TextBody textBody, string newText, List<TextParagraph>? templateParagraphs)
+    private void UpdateShapeText(OpenXmlCompositeElement textBody, string newText, List<TextParagraph>? templateParagraphs)
     {
         var existingParagraphs = textBody.Elements<D.Paragraph>().ToList();
 
@@ -581,11 +620,10 @@ public class OpenXmlRenderer : IOpenXmlRenderer
         if (tRun.FontSize.HasValue)
             rPr.FontSize = (int)(tRun.FontSize.Value * 100);
 
-        // Override bold/italic
-        if (tRun.Bold)
-            rPr.Bold = true;
-        if (tRun.Italic)
-            rPr.Italic = true;
+        // Override bold/italic — always apply the template's value so that
+        // the cloned base's formatting doesn't leak to runs that should differ
+        rPr.Bold = tRun.Bold ? true : null;
+        rPr.Italic = tRun.Italic ? true : null;
 
         // Override font color
         if (!string.IsNullOrEmpty(tRun.FontColor) && tRun.FontColor.StartsWith("#"))

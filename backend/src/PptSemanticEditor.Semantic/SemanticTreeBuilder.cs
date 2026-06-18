@@ -135,6 +135,7 @@ public class SemanticTreeBuilder : ISemanticTreeBuilder
             "shape" => "shape",
             "image" => "image",
             "table" => "table",
+            "tablecell" => "tableCell",
             "chart" => "chart",
             "graphicframe" => "shape",
             _ => "shape"

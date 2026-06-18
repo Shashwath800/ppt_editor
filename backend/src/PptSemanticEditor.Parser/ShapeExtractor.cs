@@ -37,7 +37,7 @@ public class ShapeExtractor
                     shapes.Add(ExtractConnectionShape(connectionShape));
                     break;
                 case GraphicFrame graphicFrame:
-                    shapes.Add(ExtractGraphicFrame(graphicFrame));
+                    shapes.AddRange(ExtractGraphicFrame(graphicFrame));
                     break;
                 case GroupShape groupShape:
                     shapes.AddRange(ExtractGroupShape(groupShape, slidePart));
@@ -149,60 +149,117 @@ public class ShapeExtractor
         return info;
     }
 
-    private OpenXmlShapeInfo ExtractGraphicFrame(GraphicFrame graphicFrame)
+    private List<OpenXmlShapeInfo> ExtractGraphicFrame(GraphicFrame graphicFrame)
     {
-        var info = new OpenXmlShapeInfo
+        var results = new List<OpenXmlShapeInfo>();
+
+        var parentInfo = new OpenXmlShapeInfo
         {
             RawXml = graphicFrame.OuterXml
         };
 
         var nvGfPr = graphicFrame.NonVisualGraphicFrameProperties;
+        string tableShapeId = "";
+        string tableName = "";
         if (nvGfPr?.NonVisualDrawingProperties != null)
         {
-            info.ShapeId = nvGfPr.NonVisualDrawingProperties.Id?.Value.ToString() ?? "";
-            info.Name = nvGfPr.NonVisualDrawingProperties.Name?.Value ?? "";
+            tableShapeId = nvGfPr.NonVisualDrawingProperties.Id?.Value.ToString() ?? "";
+            tableName = nvGfPr.NonVisualDrawingProperties.Name?.Value ?? "";
+            parentInfo.ShapeId = tableShapeId;
+            parentInfo.Name = tableName;
         }
 
-        // Determine the type based on content
-        var outerXml = graphicFrame.OuterXml;
-        if (outerXml.Contains("a:tbl") || outerXml.Contains("<a:tbl"))
-        {
-            info.Type = "table";
-            // Basic text extraction for tables: find all <a:t> elements and join them
-            var sb = new StringBuilder();
-            foreach (var t in graphicFrame.Descendants<DocumentFormat.OpenXml.Drawing.Text>())
-            {
-                if (!string.IsNullOrWhiteSpace(t.Text))
-                    sb.AppendLine(t.Text.Trim());
-            }
-            info.Text = sb.ToString().TrimEnd();
-        }
-        else if (outerXml.Contains("c:chart") || outerXml.Contains("chartSpace"))
-        {
-            info.Type = "chart";
-        }
-        else
-        {
-            info.Type = "graphicFrame";
-        }
-
-        // Extract transform from the graphic frame
+        // Extract transform from the graphic frame (used by both table parent and cells)
+        long offsetX = 0, offsetY = 0, extentCx = 0, extentCy = 0;
         var xfrm = graphicFrame.Transform;
         if (xfrm != null)
         {
             if (xfrm.Offset != null)
             {
-                info.OffsetX = xfrm.Offset.X?.Value ?? 0;
-                info.OffsetY = xfrm.Offset.Y?.Value ?? 0;
+                offsetX = xfrm.Offset.X?.Value ?? 0;
+                offsetY = xfrm.Offset.Y?.Value ?? 0;
             }
             if (xfrm.Extents != null)
             {
-                info.ExtentCx = xfrm.Extents.Cx?.Value ?? 0;
-                info.ExtentCy = xfrm.Extents.Cy?.Value ?? 0;
+                extentCx = xfrm.Extents.Cx?.Value ?? 0;
+                extentCy = xfrm.Extents.Cy?.Value ?? 0;
             }
         }
+        parentInfo.OffsetX = offsetX;
+        parentInfo.OffsetY = offsetY;
+        parentInfo.ExtentCx = extentCx;
+        parentInfo.ExtentCy = extentCy;
 
-        return info;
+        // Determine the type based on content
+        var outerXml = graphicFrame.OuterXml;
+        if (outerXml.Contains("a:tbl") || outerXml.Contains("<a:tbl"))
+        {
+            parentInfo.Type = "table";
+            // Parent table entry has no text — cells are extracted individually below
+            results.Add(parentInfo);
+
+            // Walk the table structure: D.Table → D.TableRow → D.TableCell
+            var table = graphicFrame.Descendants<DocumentFormat.OpenXml.Drawing.Table>().FirstOrDefault();
+            if (table != null)
+            {
+                var rows = table.Elements<DocumentFormat.OpenXml.Drawing.TableRow>().ToList();
+                for (int rowIdx = 0; rowIdx < rows.Count; rowIdx++)
+                {
+                    var cells = rows[rowIdx].Elements<DocumentFormat.OpenXml.Drawing.TableCell>().ToList();
+                    for (int colIdx = 0; colIdx < cells.Count; colIdx++)
+                    {
+                        var cell = cells[colIdx];
+
+                        // Skip merge-continuation cells — they are empty placeholders
+                        // whose content PowerPoint ignores. Only extract origin cells.
+                        // Use typed properties instead of GetAttribute — the SDK throws
+                        // KeyNotFoundException for attributes not in the element's schema.
+                        if (cell.HorizontalMerge?.Value == true ||
+                            cell.VerticalMerge?.Value == true)
+                        {
+                            continue;
+                        }
+
+                        var cellTextBody = cell.GetFirstChild<DocumentFormat.OpenXml.Drawing.TextBody>();
+                        if (cellTextBody == null)
+                            continue;
+
+                        var cellText = ExtractTextContent(cellTextBody);
+                        if (string.IsNullOrWhiteSpace(cellText))
+                            continue;
+
+                        var cellInfo = new OpenXmlShapeInfo
+                        {
+                            ShapeId = $"{tableShapeId}_r{rowIdx}_c{colIdx}",
+                            Name = $"{tableName} R{rowIdx + 1}C{colIdx + 1}",
+                            Type = "tableCell",
+                            Text = cellText,
+                            OffsetX = offsetX,
+                            OffsetY = offsetY,
+                            ExtentCx = extentCx,
+                            ExtentCy = extentCy
+                        };
+
+                        ExtractFontInfo(cellTextBody, cellInfo);
+                        cellInfo.Paragraphs = ExtractParagraphs(cellTextBody);
+
+                        results.Add(cellInfo);
+                    }
+                }
+            }
+        }
+        else if (outerXml.Contains("c:chart") || outerXml.Contains("chartSpace"))
+        {
+            parentInfo.Type = "chart";
+            results.Add(parentInfo);
+        }
+        else
+        {
+            parentInfo.Type = "graphicFrame";
+            results.Add(parentInfo);
+        }
+
+        return results;
     }
 
     private List<OpenXmlShapeInfo> ExtractGroupShape(GroupShape groupShape, SlidePart slidePart)
@@ -223,7 +280,7 @@ public class ShapeExtractor
                     shapes.Add(ExtractConnectionShape(cxnSp));
                     break;
                 case GraphicFrame gf:
-                    shapes.Add(ExtractGraphicFrame(gf));
+                    shapes.AddRange(ExtractGraphicFrame(gf));
                     break;
                 case GroupShape gs:
                     shapes.AddRange(ExtractGroupShape(gs, slidePart));

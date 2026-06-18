@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -14,6 +14,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PptSemanticEditor.Renderer", "src\PptSemanticEditor.Renderer\PptSemanticEditor.Renderer.csproj", "{A1B2C3D4-0005-0005-0005-000000000005}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PptSemanticEditor.Api", "src\PptSemanticEditor.Api\PptSemanticEditor.Api.csproj", "{A1B2C3D4-0006-0006-0006-000000000006}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{AFF56F00-7A63-4927-8D02-7BF7FE62C1D2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PptSemanticEditor.Tests", "tests\PptSemanticEditor.Tests\PptSemanticEditor.Tests.csproj", "{0158C494-A3B5-4C02-8D10-AE849E4BAA78}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -45,5 +49,12 @@ Global
 		{A1B2C3D4-0006-0006-0006-000000000006}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A1B2C3D4-0006-0006-0006-000000000006}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A1B2C3D4-0006-0006-0006-000000000006}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0158C494-A3B5-4C02-8D10-AE849E4BAA78}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0158C494-A3B5-4C02-8D10-AE849E4BAA78}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0158C494-A3B5-4C02-8D10-AE849E4BAA78}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0158C494-A3B5-4C02-8D10-AE849E4BAA78}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{0158C494-A3B5-4C02-8D10-AE849E4BAA78} = {AFF56F00-7A63-4927-8D02-7BF7FE62C1D2}
 	EndGlobalSection
 EndGlobal
