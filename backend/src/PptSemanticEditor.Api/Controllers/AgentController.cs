@@ -122,7 +122,8 @@ public class AgentController : ControllerBase
                     .Select(e =>
                     {
                         var escapedText = e.Text.Replace("\n", "\\n");
-                        return $"  [{e.Id}] ({e.Text.Length} chars): \"{escapedText}\"";
+                        var wordCount = e.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+                        return $"  [{e.Id}] (max {wordCount} words): \"{escapedText}\"";
                     });
                 return $"--- Slide {slide.Id} ---\n" + string.Join("\n", lines);
             });

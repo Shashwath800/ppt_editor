@@ -277,6 +277,11 @@ public class OpenXmlRenderer : IOpenXmlRenderer
         var existingParagraphs = textBody.Elements<D.Paragraph>().ToList();
 
         var normalizedText = newText.Replace("\\n", "\n").Replace("\r\n", "\n").Replace("\r", "\n");
+        // Collapse runs of 2+ consecutive newlines into a single newline.
+        // LLMs frequently emit '\n\n' as a paragraph separator even when instructed
+        // to preserve the original single-'\n' structure. Without this, Split('\n')
+        // produces empty-string entries that render as blank lines in the slide.
+        normalizedText = System.Text.RegularExpressions.Regex.Replace(normalizedText, "\n{2,}", "\n");
         var newLines = normalizedText.Split('\n');
 
         // Trim trailing empty lines that the AI may produce (trailing '\n').

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using PptSemanticEditor.Core.Interfaces;
 using PptSemanticEditor.Core.Models;
 
@@ -12,6 +13,7 @@ namespace PptSemanticEditor.Agent;
 public class ActionExecutor : IActionExecutor
 {
     private readonly ILlmService _llmService;
+    private static readonly Regex MultiSpaceRegex = new Regex(" {2,}", RegexOptions.Compiled);
 
     public ActionExecutor(ILlmService llmService)
     {
@@ -252,12 +254,36 @@ public class ActionExecutor : IActionExecutor
         var newText = cmd.Value ?? GetStringParam(cmd, "newText", "");
         if (!string.IsNullOrEmpty(newText))
         {
-            element.Text = newText.Replace("\\n", "\n");
+            newText = newText.Replace("\\n", "\n");
+            // Collapse runs of 2+ spaces into a single space, preserve \n line breaks
+            newText = MultiSpaceRegex.Replace(newText, " ").Trim();
+
+            // Word count validation logging
+            var originalWordCount = element.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+            var newWordCount = newText.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+            if (newWordCount > originalWordCount)
+            {
+                Console.WriteLine($"[ActionExecutor] WARNING: Word count exceeded for {element.Id} — original: {originalWordCount}, new: {newWordCount}");
+            }
+
+            element.Text = newText;
         }
         else
         {
             var rewritten = await _llmService.ApplyTextRewriteAsync(element.Text, cmd.Description);
-            element.Text = rewritten.Replace("\\n", "\n");
+            rewritten = rewritten.Replace("\\n", "\n");
+            // Collapse runs of 2+ spaces into a single space, preserve \n line breaks
+            rewritten = MultiSpaceRegex.Replace(rewritten, " ").Trim();
+
+            // Word count validation logging
+            var originalWordCount = element.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+            var newWordCount = rewritten.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+            if (newWordCount > originalWordCount)
+            {
+                Console.WriteLine($"[ActionExecutor] WARNING: Word count exceeded for {element.Id} — original: {originalWordCount}, new: {newWordCount}");
+            }
+
+            element.Text = rewritten;
         }
     }
 

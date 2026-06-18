@@ -66,7 +66,8 @@ public class GroqLlmService : ILlmService
     {
         var responseText = await ChatCompletionAsync(
             EditPlanPrompt.SystemPrompt,
-            EditPlanPrompt.BuildUserPrompt(semanticJson, userPrompt)
+            EditPlanPrompt.BuildUserPrompt(semanticJson, userPrompt),
+            temperature: 0.65
         );
 
         try
@@ -127,10 +128,10 @@ public class GroqLlmService : ILlmService
         var systemPrompt = "You are a text rewriting assistant. Rewrite the given text according to the instruction. Return ONLY the rewritten text, nothing else.";
         var userPrompt = $"Original text: \"{originalText}\"\n\nInstruction: {instruction}\n\nRewritten text:";
 
-        return await ChatCompletionAsync(systemPrompt, userPrompt);
+        return await ChatCompletionAsync(systemPrompt, userPrompt, temperature: 0.65);
     }
 
-    private async Task<string> ChatCompletionAsync(string systemPrompt, string userPrompt)
+    private async Task<string> ChatCompletionAsync(string systemPrompt, string userPrompt, double temperature = 0.3)
     {
         var requestBody = new
         {
@@ -140,7 +141,7 @@ public class GroqLlmService : ILlmService
                 new { role = "system", content = systemPrompt },
                 new { role = "user", content = userPrompt }
             },
-            temperature = 0.3,
+            temperature,
             max_tokens = 8000,
             response_format = new { type = "json_object" }
         };
