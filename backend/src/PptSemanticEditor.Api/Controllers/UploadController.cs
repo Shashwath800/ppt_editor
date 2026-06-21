@@ -14,7 +14,7 @@ public class UploadController : ControllerBase
     private readonly IAstBuilder _astBuilder;
     private readonly ISemanticTreeBuilder _treeBuilder;
     private readonly JsonGenerator _jsonGenerator;
-    private readonly IWebHostEnvironment _env;
+    private readonly StorageSettings _storageSettings;
 
     public UploadController(
         SessionStore sessionStore,
@@ -22,14 +22,14 @@ public class UploadController : ControllerBase
         IAstBuilder astBuilder,
         ISemanticTreeBuilder treeBuilder,
         JsonGenerator jsonGenerator,
-        IWebHostEnvironment env)
+        StorageSettings storageSettings)
     {
         _sessionStore = sessionStore;
         _parser = parser;
         _astBuilder = astBuilder;
         _treeBuilder = treeBuilder;
         _jsonGenerator = jsonGenerator;
-        _env = env;
+        _storageSettings = storageSettings;
     }
 
     [HttpPost]
@@ -48,9 +48,7 @@ public class UploadController : ControllerBase
         try
         {
             // Save uploaded file
-            var uploadsPath = Path.Combine(_env.ContentRootPath, "..", "..", "uploads");
-            Directory.CreateDirectory(uploadsPath);
-            var filePath = Path.Combine(uploadsPath, $"{session.SessionId}_{file.FileName}");
+            var filePath = Path.Combine(_storageSettings.Path, $"{session.SessionId}_{file.FileName}");
 
             using (var fileStream = new FileStream(filePath, FileMode.Create))
             {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using PptSemanticEditor.Agent;
 using PptSemanticEditor.Api.Services;
 using PptSemanticEditor.Core.Interfaces;
@@ -10,6 +11,7 @@ namespace PptSemanticEditor.Api.Controllers;
 
 [ApiController]
 [Route("api/agent")]
+[EnableRateLimiting("agent")]
 public class AgentController : ControllerBase
 {
     private readonly SessionStore _sessionStore;

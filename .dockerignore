@@ -1,0 +1,9 @@
+**/node_modules
+**/bin
+**/obj
+**/dist
+**/uploads
+**/App_Data
+.git
+.vscode
+.idea

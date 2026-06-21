@@ -10,16 +10,16 @@ public class RendererController : ControllerBase
 {
     private readonly SessionStore _sessionStore;
     private readonly IOpenXmlRenderer _renderer;
-    private readonly IWebHostEnvironment _env;
+    private readonly StorageSettings _storageSettings;
 
     public RendererController(
         SessionStore sessionStore,
         IOpenXmlRenderer renderer,
-        IWebHostEnvironment env)
+        StorageSettings storageSettings)
     {
         _sessionStore = sessionStore;
         _renderer = renderer;
-        _env = env;
+        _storageSettings = storageSettings;
     }
 
     [HttpPost("{sessionId}/render")]
@@ -44,9 +44,7 @@ public class RendererController : ControllerBase
             using var pptxStream = await _renderer.RenderAsync(presentation, session.FilePath);
 
             // Save to uploads directory
-            var uploadsPath = Path.Combine(_env.ContentRootPath, "..", "..", "uploads");
-            Directory.CreateDirectory(uploadsPath);
-            var outputPath = Path.Combine(uploadsPath, $"{sessionId}_output.pptx");
+            var outputPath = Path.Combine(_storageSettings.Path, $"{sessionId}_output.pptx");
 
             using (var fileStream = new FileStream(outputPath, FileMode.Create))
             {
